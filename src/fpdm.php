@@ -874,6 +874,7 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                     $offset_shift=$this->set_field_tooltip($name,$value);
 
                 } elseif ($this->useCheckboxParser && isset($this->value_entries["$name"]['infos']['checkbox_state'])) { //FIX: set checkbox value
+                    $updated_parent_widgets = false;
                     if (isset($this->value_entries["$name"]['infos']['parent_obj'])
                         && isset($this->value_entries["$name"]["infos"]["checkbox_no"])
                         && isset($this->value_entries["$name"]["infos"]["checkbox_yes"])) {
@@ -892,10 +893,11 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                                 echo "<br>Could not find object [$parent_obj] which is the parent of checkbox [$name]";
                             }
                         } else {
-                            $state = $this->value_entries["$name"]["infos"]["checkbox_no"];
-                            if ($value) {
-                                $state = $this->value_entries["$name"]["infos"]["checkbox_yes"];
-                            }
+                            $state = $this->resolve_checkbox_state(
+                                $this->value_entries["$name"]["infos"]["checkbox_yes"],
+                                $this->value_entries["$name"]["infos"]["checkbox_no"],
+                                $value
+                            );
 
                             $state_line = " /V /$state ";
                             $parent_value_applied = false;
@@ -940,9 +942,18 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                                     $this->apply_offset_shift_from_object($parent_obj, $offset_shift);
                                 }
                             }
+
+                            // Keep widget appearances in sync with parent /V for radio groups.
+                            $updated_parent_widgets = $this->set_parent_widget_states(
+                                $parent_obj,
+                                $state,
+                                $this->value_entries["$name"]["infos"]["checkbox_no"]
+                            );
                         }
                     }
-                    $offset_shift=$this->set_field_checkbox($name, $value);
+                    if (!$updated_parent_widgets) {
+                        $offset_shift=$this->set_field_checkbox($name, $value);
+                    }
                     //ENDFIX
                 } else {//if(isset($this->value_entries["$name"]["values"]["$type"])) {
 //				echo $this->value_entries["$name"]["values"]["$type"];
@@ -998,6 +1009,120 @@ if (!call_user_func_array('class_exists', $__tmp)) {
             return $offset_shift;
         }
 
+        /**
+         * Resolve a requested checkbox/radio state into a concrete PDF state token.
+         *
+         * @param string $checkbox_yes
+         * @param string $checkbox_no
+         * @param mixed $value
+         * @return string
+         */
+        function resolve_checkbox_state($checkbox_yes, $checkbox_no, $value)
+        {
+            if (is_bool($value)) {
+                return $value ? $checkbox_yes : $checkbox_no;
+            }
+
+            if (is_int($value) || is_float($value)) {
+                return ((int)$value) !== 0 ? $checkbox_yes : $checkbox_no;
+            }
+
+            if (!is_string($value)) {
+                return $value ? $checkbox_yes : $checkbox_no;
+            }
+
+            $trimmed_value = trim($value);
+            if ($trimmed_value === '') {
+                return $checkbox_no;
+            }
+
+            if ($trimmed_value[0] === '/') {
+                $trimmed_value = substr($trimmed_value, 1);
+            }
+
+            if ($trimmed_value === $checkbox_yes || $trimmed_value === $checkbox_no) {
+                return $trimmed_value;
+            }
+
+            $normalized_value = strtolower($trimmed_value);
+            if (in_array($normalized_value, array('1', 'true', 'yes', 'y', 'on'), true)) {
+                return $checkbox_yes;
+            }
+            if (in_array($normalized_value, array('0', 'false', 'no', 'n', 'off'), true)) {
+                return $checkbox_no;
+            }
+
+            if (preg_match('/^[^\s<>\[\]\(\)\/]+$/', $trimmed_value)) {
+                return $trimmed_value;
+            }
+
+            return $checkbox_no;
+        }
+
+        /**
+         * Sync /AS of all widgets belonging to the same parent field object.
+         *
+         * @param int $parent_obj
+         * @param string $selected_state
+         * @param string $off_state
+         * @return bool
+         */
+        function set_parent_widget_states($parent_obj, $selected_state, $off_state = 'Off')
+        {
+            $updated = false;
+            $current_object_id = 0;
+            $parent_pattern = '/\/Parent\s+' . preg_quote((string)$parent_obj, '/') . '\s+0\s+R\b/';
+
+            foreach ($this->pdf_entries as $line_index => $line_content) {
+                $trimmed_line = trim($line_content);
+                if (preg_match('/^(\d+)\s+0\s+obj\b/', $trimmed_line, $object_match)) {
+                    $current_object_id = intval($object_match[1]);
+                }
+
+                if (!preg_match($parent_pattern, $line_content)) {
+                    continue;
+                }
+
+                $widget_yes_state = '';
+                if (preg_match('/\/D\s*<<\s*\/([^\s<>\[\]\(\)]+)\s+\d+\s+\d+\s+R\s*\/([^\s<>\[\]\(\)]+)\s+\d+\s+\d+\s+R/', $line_content, $match)) {
+                    $first_state = $match[1];
+                    $second_state = $match[2];
+                    if (strtolower($first_state) === strtolower($off_state)) {
+                        $widget_yes_state = $second_state;
+                    } elseif (strtolower($second_state) === strtolower($off_state)) {
+                        $widget_yes_state = $first_state;
+                    } else {
+                        $widget_yes_state = $first_state;
+                    }
+                }
+
+                if ($widget_yes_state === '') {
+                    continue;
+                }
+
+                $next_state = ($widget_yes_state === $selected_state) ? $widget_yes_state : $off_state;
+                $updated_line = preg_replace(
+                    '/\/AS\s*\/[^\s<>\[\]\(\)]+/',
+                    '/AS /' . $next_state,
+                    $line_content,
+                    1
+                );
+
+                if (!is_string($updated_line) || $updated_line === $line_content) {
+                    continue;
+                }
+
+                $shift = strlen($updated_line) - strlen($line_content);
+                $this->pdf_entries[$line_index] = $updated_line;
+                if ($shift !== 0 && $current_object_id > 0) {
+                    $this->apply_offset_shift_from_object($current_object_id, $shift);
+                }
+                $updated = true;
+            }
+
+            return $updated;
+        }
+
         //FIX: parse checkbox definition
         /**
          *Changes the checkbox state.
@@ -1021,13 +1146,22 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                         if ($verbose_set) {
                             echo "<br>Change checkbox of the field $name at line $field_checkbox_line to value [$value]";
                         }
-                        $state = $this->value_entries["$name"]["infos"]["checkbox_no"];
-                        if ($value) {
-                            $state = $this->value_entries["$name"]["infos"]["checkbox_yes"];
-                        }
+                        $checkbox_yes = $this->value_entries["$name"]["infos"]["checkbox_yes"];
+                        $checkbox_no = $this->value_entries["$name"]["infos"]["checkbox_no"];
+                        $state = $this->resolve_checkbox_state($checkbox_yes, $checkbox_no, $value);
                         $CurLine =$this->pdf_entries[$field_checkbox_line];
                         $OldLen=strlen($CurLine);
-                        $CurLine = '/AS /'.$state;
+                        $UpdatedLine = preg_replace(
+                            '/\/AS\s*\/[^\s<>\[\]\(\)]+/',
+                            '/AS /' . $state,
+                            $CurLine,
+                            1
+                        );
+                        if (is_string($UpdatedLine) && $UpdatedLine !== $CurLine) {
+                            $CurLine = $UpdatedLine;
+                        } else {
+                            $CurLine = rtrim($CurLine) . ' /AS /' . $state;
+                        }
                         $NewLen=strlen($CurLine);
                         $Shift=$NewLen-$OldLen;
                         $this->shift=$this->shift+$Shift;
