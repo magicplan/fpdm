@@ -18,9 +18,14 @@
   ],
   "homepage": "https://github.com/williamgall/fpdm",
   "autoload": {
+    "psr-4": {
+      "Magicplan\\Fpdm\\": "src/"
+    },
     "classmap": [
-      "src/fpdm.php",
       "src/filters/"
+    ],
+    "files": [
+      "src/legacy_alias.php"
     ]
   },
   "repositories": [

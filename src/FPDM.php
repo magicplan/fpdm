@@ -1,5 +1,7 @@
 <?php
 
+namespace Magicplan\Fpdm;
+
 /*******************************************************************************
  * FPDM                                                                         *
  *                                                                              *
@@ -57,7 +59,9 @@ if (!defined('FPDM_DIRECT')) {
 // require_once("filters/FilterStandard.php");
 
 
-$__tmp = version_compare(phpversion(), "5") == -1 ? array('FPDM') : array('FPDM', false);
+$__tmp = version_compare(phpversion(), "5") == -1
+    ? array(__NAMESPACE__ . '\\FPDM')
+    : array(__NAMESPACE__ . '\\FPDM', false);
 if (!call_user_func_array('class_exists', $__tmp)) {
 
 
@@ -572,9 +576,9 @@ if (!call_user_func_array('class_exists', $__tmp)) {
 
             if($this->support == "pdftk") {
                 //As PDFTK can only merge FDF files not data directly,
-                require_once("lib/url.php"); //we will need a url support because relative urls for pdf inside fdf files are not supported by PDFTK...
-                require_once("export/fdf/fdf.php"); //...conjointly with my patched/bridged forge_fdf that provides fdf file generation support from array data.
-                require_once("export/pdf/pdftk.php");//Of course don't forget to bridge to PDFTK!
+                require_once(__DIR__ . "/lib/url.php"); //we will need a url support because relative urls for pdf inside fdf files are not supported by PDFTK...
+                require_once(__DIR__ . "/export/fdf/fdf.php"); //...conjointly with my patched/bridged forge_fdf that provides fdf file generation support from array data.
+                require_once(__DIR__ . "/export/pdf/pdftk.php");//Of course don't forget to bridge to PDFTK!
 
                 $tmp_file=false;
                 $pdf_file=resolve_path(fix_path(dirname(__FILE__).'/'.$this->pdf_source));      //string: full pathname to the input pdf , a form file
@@ -791,16 +795,16 @@ if (!call_user_func_array('class_exists', $__tmp)) {
 
             $OldLen=strlen($CurLine);
 
-            //My PHP4/5 static call hack, only to make the callback $this->replace_value($matches,"$value") possible!
-            $callback_code='$THIS=new FPDM("[_STATIC_]");return $THIS->replace_value($matches,"'.$value.'");';
-
             $field_regexp='/^\/(\w+)\s?(\<|\()([^\)\>]*)(\)|\>)/';
 
             if(preg_match($field_regexp,$CurLine)) {
                 //modify it according to the new value $value
+                $THIS = $this;
                 $CurLine = preg_replace_callback(
                     $field_regexp,
-                    create_function('$matches',$callback_code),
+                    function($matches) use ($THIS, $value) {
+                        return $THIS->replace_value($matches,$value);
+                    },
                     $CurLine
                 );
             }else {
@@ -1690,19 +1694,19 @@ if (!call_user_func_array('class_exists', $__tmp)) {
 
             switch($name) {
                 case "LZWDecode":
-                    $filter=new FilterLZW();
+                    $filter=new \FilterLZW();
                     break;
                 case "ASCIIHexDecode":
-                    $filter=new FilterASCIIHex();
+                    $filter=new \FilterASCIIHex();
                     break;
                 case "ASCII85Decode":
-                    $filter=new FilterASCII85();
+                    $filter=new \FilterASCII85();
                     break;
                 case "FlateDecode":
-                    $filter=new FilterFlate();
+                    $filter=new \FilterFlate();
                     break;
                 case "Standard": //Raw
-                    $filter=new FilterStandard();
+                    $filter=new \FilterStandard();
                     break;
                 default:
                     $this->Error("getFilter cannot open stream of object because filter '{$name}' is not supported, sorry.");

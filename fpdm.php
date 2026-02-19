@@ -10,10 +10,10 @@
 
 define('FPDM_DIRECT', true);
 
-require_once("src/fpdm.php");
+require_once(__DIR__ . "/src/legacy_alias.php");
 
-require_once("src/filters/FilterASCIIHex.php");
-require_once("src/filters/FilterASCII85.php");
-require_once("src/filters/FilterFlate.php");
-require_once("src/filters/FilterLZW.php");
-require_once("src/filters/FilterStandard.php");
+require_once(__DIR__ . "/src/filters/FilterASCIIHex.php");
+require_once(__DIR__ . "/src/filters/FilterASCII85.php");
+require_once(__DIR__ . "/src/filters/FilterFlate.php");
+require_once(__DIR__ . "/src/filters/FilterLZW.php");
+require_once(__DIR__ . "/src/filters/FilterStandard.php");
