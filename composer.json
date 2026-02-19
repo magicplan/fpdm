@@ -1,5 +1,5 @@
 {
-  "name": "williamgall/fpdm",
+  "name": "magicplan/fpdm",
   "description": "PDF form filling using FPDM Class written by FPDF author Olivier",
   "type": "library",
   "license": "MIT",
@@ -16,7 +16,7 @@
       "homepage": "https://github.com/williamgall/"
     }
   ],
-  "homepage": "https://github.com/williamgall/fpdm",
+  "homepage": "https://github.com/magicplan/fpdm",
   "autoload": {
     "psr-4": {
       "Magicplan\\Fpdm\\": "src/"
@@ -31,7 +31,7 @@
   "repositories": [
     {
       "type": "git",
-      "url": "https://github.com/williamgall/fpdm",
+      "url": "https://github.com/magicplan/fpdm",
       "name": "GitHub"
     }
   ],
@@ -48,7 +48,7 @@
     "FPDF"
   ],
   "support": {
-    "issues": "https://github.com/codeshell/fpdm/issues",
-    "source": "https://github.com/codeshell/fpdm/tree/master"
+    "issues": "https://github.com/magicplan/fpdm/issues",
+    "source": "https://github.com/magicplan/fpdm/tree/master"
   }
 }
