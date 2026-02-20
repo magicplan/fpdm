@@ -126,7 +126,7 @@ if (!call_user_func_array('class_exists', $__tmp)) {
          *@param string $fdf_source Source-Filename
          *@param boolean $verbose , optional false per default
          */
-        function __construct() {
+        function __construct($pdf_source = null, $fdf_source = null, $verbose = false) {
             //==============
 
             $args=func_get_args();
