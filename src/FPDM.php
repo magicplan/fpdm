@@ -60,6 +60,15 @@ if (!defined('FPDM_DIRECT')) {
 
 
 $__tmp = version_compare(phpversion(), "5") == -1
+    ? array(__NAMESPACE__ . '\\FPDMException')
+    : array(__NAMESPACE__ . '\\FPDMException', false);
+if (!call_user_func_array('class_exists', $__tmp)) {
+    class FPDMException extends \RuntimeException {}
+}
+
+unset($__tmp);
+
+$__tmp = version_compare(phpversion(), "5") == -1
     ? array(__NAMESPACE__ . '\\FPDM')
     : array(__NAMESPACE__ . '\\FPDM', false);
 if (!call_user_func_array('class_exists', $__tmp)) {
@@ -2529,13 +2538,13 @@ if (!call_user_func_array('class_exists', $__tmp)) {
         }
 
         /**
-         * Print Error and die
+         * Throw a merge error exception.
          *
          * @param string $msg  Error-Message
          */
         function Error($msg) {
             //--------------------
-            die('<b>FPDF-Merge Error:</b> '.$msg);
+            throw new FPDMException('FPDF-Merge Error: '.$msg);
         }
 
 

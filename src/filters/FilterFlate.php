@@ -16,7 +16,11 @@ if (!call_user_func_array('class_exists', $__tmp)) {
         var $dataLength = 0;
     
         function error($msg) {
-            die($msg);
+            if (class_exists('\\Magicplan\\Fpdm\\FPDMException')) {
+                throw new \Magicplan\Fpdm\FPDMException($msg);
+            }
+
+            throw new \RuntimeException($msg);
         }
         
         /**
