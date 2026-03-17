@@ -869,6 +869,43 @@ if (!call_user_func_array('class_exists', $__tmp)) {
             return $Shift;
         }
 
+        /**
+         * Determine whether a field definition should receive text appearance updates.
+         *
+         * @param array $field_definition
+         * @return bool
+         */
+        function field_supports_text_appearances($field_definition)
+        {
+            if (isset($field_definition["infos"]["field_type"]) && $field_definition["infos"]["field_type"] == 'Tx') {
+                return true;
+            }
+
+            if (isset($field_definition["infos"]["parent_field_type"]) && $field_definition["infos"]["parent_field_type"] == 'Tx') {
+                return true;
+            }
+
+            if (!isset($field_definition["infos"]["widgets"]) || !is_array($field_definition["infos"]["widgets"])) {
+                return false;
+            }
+
+            foreach ($field_definition["infos"]["widgets"] as $widget) {
+                if (isset($widget["field_type"]) && $widget["field_type"] == 'Tx') {
+                    return true;
+                }
+
+                if (isset($widget["parent_field_type"]) && $widget["parent_field_type"] == 'Tx') {
+                    return true;
+                }
+
+                if (isset($widget["appearance_normal_stream"]) && is_array($widget["appearance_normal_stream"])) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
 
         /**
          *Changes the value of a field property, inline.
@@ -1001,7 +1038,8 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                 //offset size shift will affect the next objects offsets taking into accound the order they appear in the file--
                 $this->apply_offset_shift_from_object($object_id,$offset_shift);
 
-                if(($type=="current") || ($type=="default")) {
+                if((($type=="current") || ($type=="default"))
+                    && $this->field_supports_text_appearances($field_definition)) {
                     $this->set_text_field_appearances($name,$value);
                 }
 
@@ -1604,6 +1642,50 @@ if (!call_user_func_array('class_exists', $__tmp)) {
             }
 
             return $length;
+        }
+
+        /**
+         * Remove parent button field references from the AcroForm /Fields array.
+         *
+         * PDFKit can hide checkbox/radio widgets when /NeedAppearances is true and
+         * their parent button fields stay in /Fields. Keep the widgets editable, but
+         * drop the parent button refs from the AcroForm field list.
+         *
+         * @param string $line
+         * @param array $object_ids
+         * @return string
+         */
+        function remove_field_refs_from_acroform_line($line, $object_ids)
+        {
+            $object_ids = array_unique(array_map('intval', $object_ids));
+            if (count($object_ids) === 0) {
+                return $line;
+            }
+
+            if (!preg_match('/\/Fields\s*\[(.*?)\]/', $line, $match)) {
+                return $line;
+            }
+
+            $field_refs = array();
+            if (preg_match_all('/(\d+)\s+(\d+)\s+R/', $match[1], $ref_matches, PREG_SET_ORDER)) {
+                foreach ($ref_matches as $ref_match) {
+                    $object_id = intval($ref_match[1]);
+                    if (in_array($object_id, $object_ids, true)) {
+                        continue;
+                    }
+
+                    $field_refs[] = $object_id . ' ' . intval($ref_match[2]) . ' R';
+                }
+            }
+
+            $replacement = '/Fields [';
+            if (count($field_refs) > 0) {
+                $replacement .= ' ' . implode(' ', $field_refs) . ' ';
+            }
+            $replacement .= ']';
+
+            $updated_line = preg_replace('/\/Fields\s*\[(.*?)\]/', $replacement, $line, 1);
+            return is_string($updated_line) ? $updated_line : $line;
         }
 
         /**
@@ -2615,6 +2697,7 @@ if (!call_user_func_array('class_exists', $__tmp)) {
             $producer='';
             $creationDate='';
             $object_names_by_id=array();
+            $object_field_types_by_id=array();
             $pending_widgets_by_parent=array();
             $streams_by_object=array();
 
@@ -2659,6 +2742,9 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                                 if($name != '') {
                                     $object_names_by_id[$obj] = $name;
                                 }
+                                if($field_type != '') {
+                                    $object_field_types_by_id[$obj] = $field_type;
+                                }
 
                                 //We process fields here, save only Annotations texts that are supported by now
                                 if($subtype=="Widget") {
@@ -2687,6 +2773,9 @@ if (!call_user_func_array('class_exists', $__tmp)) {
 
                                     if(($name == '') && isset($object["infos"]["parent_obj"])) {
                                         $parent_obj_id = intval($object["infos"]["parent_obj"]);
+                                        if(isset($object_field_types_by_id[$parent_obj_id])) {
+                                            $object["infos"]["parent_field_type"] = $object_field_types_by_id[$parent_obj_id];
+                                        }
                                         if(isset($object_names_by_id[$parent_obj_id]) && $object_names_by_id[$parent_obj_id] != '') {
                                             $name = $object_names_by_id[$parent_obj_id];
                                             $object["infos"]["name"] = $name;
@@ -2890,6 +2979,9 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                                             echo("<br>Found Parent is '<i>$parent_obj</i>'");
                                         }
                                         $object["infos"]["parent_obj"] = $parent_obj;
+                                        if(isset($object_field_types_by_id[$parent_obj])) {
+                                            $object["infos"]["parent_field_type"] = $object_field_types_by_id[$parent_obj];
+                                        }
                                     }
 
                                     if (!$ap_line && preg_match('/(^|\s)\/AP\b/', $CurLine)) {
@@ -2906,8 +2998,8 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                                         $object["infos"]["appearance_normal_object"] = $ap_normal_object;
                                     }
 
-                                    if(($field_type=='')&&preg_match("/^\/FT\s+\/(\w+)/",$CurLine,$match)) {
-                                        $field_type=$match[1];
+                                    if(($field_type=='')&&preg_match("/(^|\s)\/FT\s+\/(\w+)/",$CurLine,$match)) {
+                                        $field_type=$match[2];
                                         $object["infos"]["field_type"]=$field_type;
                                     }
 
@@ -3212,6 +3304,9 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                     }
 
                     foreach($widgets as $widget) {
+                        if(isset($object_field_types_by_id[$parent_obj_id])) {
+                            $widget["infos"]["parent_field_type"] = $object_field_types_by_id[$parent_obj_id];
+                        }
                         $widget["infos"]["name"] = $parent_name;
                         $this->register_field_object($lines,$parent_name,$widget);
                     }
@@ -3237,16 +3332,19 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                 $lines[$field_name]["infos"]["widgets"]=$widgets;
             }
 
-            // Remove checkbox parents from fields line, to make sure they will still be displayed, even if /NeedAppearance is set to true.
+            // Remove checkbox/radio parent fields from /Fields when /NeedAppearances is enabled.
+            // PDFKit can hide button widgets otherwise.
             if ($fields_line !== -1) {
                 $fields = $this->pdf_entries[$fields_line];
+                $button_parent_ids = array();
                 foreach ($lines as $line) {
-                    if (isset($line['infos']['parent_obj'])) {
-                        $parent_obj = $line['infos']['parent_obj'];
-                        $fields = preg_replace('/(.*\/Fields\s\[(\d+\s\d\sR\s?)*)(' . $parent_obj . '\s\d\sR\s?)((\d+\s\d\sR\s?)*\])/', '$1$4', $fields);
+                    if (isset($line['infos']['parent_obj'])
+                        && isset($line['infos']['parent_field_type'])
+                        && ($line['infos']['parent_field_type'] == 'Btn')) {
+                        $button_parent_ids[] = intval($line['infos']['parent_obj']);
                     }
                 }
-                $this->pdf_entries[$fields_line] = $fields;
+                $this->pdf_entries[$fields_line] = $this->remove_field_refs_from_acroform_line($fields, $button_parent_ids);
             }
 
             return count($lines);
