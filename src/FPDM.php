@@ -880,7 +880,10 @@ if (!call_user_func_array('class_exists', $__tmp)) {
             //Get the line(s) of the misc field values
             if(isset($this->value_entries["$name"])) {
 
-                $object_id=$this->value_entries["$name"]["infos"]["object"];
+                $field_definition=$this->value_entries["$name"];
+                $object_id=isset($field_definition["infos"]["value_object"])
+                    ? $field_definition["infos"]["value_object"]
+                    : $field_definition["infos"]["object"];
 
                 if($type=="tooltip") {
 
@@ -978,10 +981,14 @@ if (!call_user_func_array('class_exists', $__tmp)) {
 
                                         if($verbose_set) echo "<br>Change $type value of the field $name at line $field_value_line to '<i>$value</i>'";
                                         $offset_shift=$this->_set_field_value($field_value_line,$value);*/
-                    if(isset($this->value_entries[$name]["values"]["current"]))
-                        $offset_shift=$this->_set_field_value2($this->value_entries[$name]["values"]["current"],$value,false);
-                    else
-                        $offset_shift=$this->_set_field_value2($this->value_entries[$name]["infos"]["name_line"],$value,true);
+                    if(isset($field_definition["values"]["current"]))
+                        $offset_shift=$this->_set_field_value2($field_definition["values"]["current"],$value,false);
+                    else {
+                        $value_name_line=isset($field_definition["infos"]["value_name_line"])
+                            ? $field_definition["infos"]["value_name_line"]
+                            : $field_definition["infos"]["name_line"];
+                        $offset_shift=$this->_set_field_value2($value_name_line,$value,true);
+                    }
                 }
 //				}else
 //					$this->Error("set_field_value failed as invalid valuetype $type for object $object_id");
@@ -989,6 +996,10 @@ if (!call_user_func_array('class_exists', $__tmp)) {
 
                 //offset size shift will affect the next objects offsets taking into accound the order they appear in the file--
                 $this->apply_offset_shift_from_object($object_id,$offset_shift);
+
+                if(($type=="current") || ($type=="default")) {
+                    $this->set_text_field_appearances($name,$value);
+                }
 
             } else
                 $this->Error("field $name not found");
@@ -1020,6 +1031,255 @@ if (!call_user_func_array('class_exists', $__tmp)) {
             } else
                 $this->Error("set_field_tooltip failed as the field $name does not exist");
             return $offset_shift;
+        }
+
+        /**
+         * Rank a field object to decide which one should drive /V updates.
+         *
+         * @param array $object
+         * @return int
+         */
+        function get_field_object_score($object)
+        {
+            $score = 0;
+
+            if (isset($object["values"]["current"])) {
+                $score += 8;
+            }
+            if (isset($object["values"]["default"])) {
+                $score += 4;
+            }
+            if (isset($object["infos"]["name_line"])) {
+                $score += 2;
+            }
+            if (isset($object["infos"]["field_type"]) && $object["infos"]["field_type"] == 'Tx') {
+                $score += 1;
+            }
+            if (isset($object["infos"]["subtype"]) && $object["infos"]["subtype"] == 'Widget') {
+                $score += 1;
+            }
+
+            return $score;
+        }
+
+        /**
+         * Merge widget metadata while preserving one entry per widget object.
+         *
+         * @param array $current_widgets
+         * @param array $incoming_widgets
+         * @return array
+         */
+        function merge_field_widgets($current_widgets, $incoming_widgets)
+        {
+            $widgets = array();
+
+            foreach (array($current_widgets, $incoming_widgets) as $widget_group) {
+                if (!is_array($widget_group)) {
+                    continue;
+                }
+
+                foreach ($widget_group as $widget) {
+                    if (!is_array($widget) || !isset($widget["object"])) {
+                        continue;
+                    }
+
+                    $widget_object = intval($widget["object"]);
+                    if (!array_key_exists($widget_object, $widgets)) {
+                        $widgets[$widget_object] = $widget;
+                    } else {
+                        $widgets[$widget_object] = array_merge($widgets[$widget_object], $widget);
+                    }
+                }
+            }
+
+            return array_values($widgets);
+        }
+
+        /**
+         * Pick the object that should be edited when changing /V.
+         *
+         * @param array $candidates
+         * @return array|null
+         */
+        function get_field_write_target($candidates)
+        {
+            $best_target = null;
+            $best_score = -1;
+
+            foreach ($candidates as $candidate) {
+                if (!is_array($candidate) || !isset($candidate["infos"]["object"])) {
+                    continue;
+                }
+
+                $score = 0;
+                if (isset($candidate["values"]["current"])) {
+                    $score += 8;
+                }
+                if (isset($candidate["infos"]["name_line"])) {
+                    $score += 4;
+                }
+                if (isset($candidate["infos"]["field_type"]) && $candidate["infos"]["field_type"] == 'Tx') {
+                    $score += 1;
+                }
+                if (isset($candidate["infos"]["subtype"]) && $candidate["infos"]["subtype"] == 'Widget') {
+                    $score += 1;
+                }
+
+                if ($score > $best_score) {
+                    $best_score = $score;
+                    $best_target = $candidate;
+                }
+            }
+
+            return $best_target;
+        }
+
+        /**
+         * Register or merge a parsed field object under its field name.
+         *
+         * @param array $lines
+         * @param string $name
+         * @param array $object
+         */
+        function register_field_object(&$lines, $name, $object)
+        {
+            if (!isset($object["infos"]["widgets"])) {
+                $object["infos"]["widgets"] = array();
+            }
+
+            if (!array_key_exists($name, $lines)) {
+                $write_target = $this->get_field_write_target(array($object));
+                if (!is_null($write_target)) {
+                    $object["infos"]["object"] = $write_target["infos"]["object"];
+                    $object["infos"]["value_object"] = $write_target["infos"]["object"];
+                    if (isset($write_target["infos"]["name_line"])) {
+                        $object["infos"]["name_line"] = $write_target["infos"]["name_line"];
+                        $object["infos"]["value_name_line"] = $write_target["infos"]["name_line"];
+                    }
+                }
+
+                $lines[$name] = $object;
+                return;
+            }
+
+            $existing = $lines[$name];
+            $use_incoming = ($this->get_field_object_score($object) > $this->get_field_object_score($existing));
+            $merged = $use_incoming ? $object : $existing;
+            $other = $use_incoming ? $existing : $object;
+
+            if (isset($other["values"])) {
+                foreach ($other["values"] as $value_type => $line_index) {
+                    if (!isset($merged["values"][$value_type])) {
+                        $merged["values"][$value_type] = $line_index;
+                    }
+                }
+            }
+
+            if (isset($other["constraints"])) {
+                foreach ($other["constraints"] as $constraint_name => $constraint_value) {
+                    if (!isset($merged["constraints"][$constraint_name]) || !$merged["constraints"][$constraint_name]) {
+                        $merged["constraints"][$constraint_name] = $constraint_value;
+                    }
+                }
+            }
+
+            if (isset($other["infos"])) {
+                foreach ($other["infos"] as $info_name => $info_value) {
+                    if ($info_name == 'widgets' || $info_name == 'value_object' || $info_name == 'value_name_line') {
+                        continue;
+                    }
+
+                    if (!isset($merged["infos"][$info_name]) || $merged["infos"][$info_name] === '' || $merged["infos"][$info_name] === 0) {
+                        $merged["infos"][$info_name] = $info_value;
+                    }
+                }
+            }
+
+            $existing_widgets = isset($existing["infos"]["widgets"]) ? $existing["infos"]["widgets"] : array();
+            $incoming_widgets = isset($object["infos"]["widgets"]) ? $object["infos"]["widgets"] : array();
+            $merged["infos"]["widgets"] = $this->merge_field_widgets($existing_widgets, $incoming_widgets);
+
+            $write_target = $this->get_field_write_target(array($existing, $object, $merged));
+            if (!is_null($write_target)) {
+                $merged["infos"]["object"] = $write_target["infos"]["object"];
+                $merged["infos"]["value_object"] = $write_target["infos"]["object"];
+                if (isset($write_target["infos"]["name_line"])) {
+                    $merged["infos"]["name_line"] = $write_target["infos"]["name_line"];
+                    $merged["infos"]["value_name_line"] = $write_target["infos"]["name_line"];
+                }
+            }
+
+            $lines[$name] = $merged;
+        }
+
+        /**
+         * Update every text widget appearance stream associated with a field.
+         *
+         * @param string $name
+         * @param string $value
+         * @return int
+         */
+        function set_text_field_appearances($name, $value)
+        {
+            $offset_shift = 0;
+
+            if (!isset($this->value_entries[$name]["infos"]["widgets"])) {
+                return $offset_shift;
+            }
+
+            $widget_count = count($this->value_entries[$name]["infos"]["widgets"]);
+            for ($widget_index = 0; $widget_index < $widget_count; $widget_index++) {
+                $widget = $this->value_entries[$name]["infos"]["widgets"][$widget_index];
+                if (!isset($widget["appearance_normal_stream"]) || !is_array($widget["appearance_normal_stream"])) {
+                    continue;
+                }
+
+                $offset_shift += $this->change_stream_value($widget["appearance_normal_stream"], $value);
+            }
+
+            return $offset_shift;
+        }
+
+        /**
+         * Keep cached widget stream line positions aligned after a stream splice.
+         *
+         * @param int $from_line
+         * @param int $line_shift
+         */
+        function shift_widget_stream_lines($from_line, $line_shift)
+        {
+            if($line_shift == 0) {
+                return;
+            }
+
+            foreach($this->value_entries as $field_name => $field_definition) {
+                if(!is_array($field_definition) || !isset($field_definition["infos"]["widgets"])) {
+                    continue;
+                }
+
+                foreach($field_definition["infos"]["widgets"] as $widget_index => $widget) {
+                    if(!isset($widget["appearance_normal_stream"]) || !is_array($widget["appearance_normal_stream"])) {
+                        continue;
+                    }
+
+                    if($widget["appearance_normal_stream"]["start"] > $from_line) {
+                        $widget["appearance_normal_stream"]["start"] += $line_shift;
+                    }
+                    if($widget["appearance_normal_stream"]["end"] > $from_line) {
+                        $widget["appearance_normal_stream"]["end"] += $line_shift;
+                    }
+                    if(isset($widget["appearance_normal_stream"]["length"]["line"])
+                        && $widget["appearance_normal_stream"]["length"]["line"] > $from_line) {
+                        $widget["appearance_normal_stream"]["length"]["line"] += $line_shift;
+                    }
+                    if(isset($widget["appearance_normal_stream"]["filters"]["line"])
+                        && $widget["appearance_normal_stream"]["filters"]["line"] > $from_line) {
+                        $widget["appearance_normal_stream"]["filters"]["line"] += $line_shift;
+                    }
+
+                    $this->value_entries[$field_name]["infos"]["widgets"][$widget_index]=$widget;
+                }
+            }
         }
 
         /**
@@ -1737,7 +1997,7 @@ if (!call_user_func_array('class_exists', $__tmp)) {
          */
         function is_text_stream($stream_content) {
             //--------------------------------------
-            return preg_match("/(\s*Td\s+[\<\(])([^\>\)]+)([\>\)]\s+Tj)/",$stream_content);
+            return preg_match('/(\bTd\s*)(<[^>]*>|\((?:\\\\.|[^\\\\)])*\))(\s*Tj\b)/s',$stream_content);
         }
 
         /**
@@ -1753,56 +2013,75 @@ if (!call_user_func_array('class_exists', $__tmp)) {
             $entries=&$this->pdf_entries;
 
             $verbose_parsing=($this->verbose&&($this->verbose_level>3));
+            $is_text_stream = isset($stream["content"]) && $this->is_text_stream($stream["content"]);
 
             if($is_text_stream) {
 
-                $OldLen=$stream["length"]["value"];
+                $OldLen=strlen($stream["raw"]);
                 $lMin=$stream["start"];
                 $lMax=$stream["end"];
+                $decoded_stream_content=$this->_set_text_value($stream["content"],$value);
+                $encoded_stream_content=$decoded_stream_content;
+                $filters=isset($stream["filters"]["type"]) ? $stream["filters"]["type"] : array("Standard");
 
-                $stream_content=$this->_set_text_value($stream_content,$value);
-                $NewLen=strlen($stream_content);
+                for($f=count($filters)-1;$f>=0;$f--) {
+                    $filter_name=$filters[$f];
+                    $stream_filter=$this->getFilter($filter_name);
+                    $encoded_stream_content=$stream_filter->encode($encoded_stream_content);
+                }
 
-                for($l=$lMin;$l<=$lMax;$l++) {
+                $NewLen=strlen($encoded_stream_content);
+                $new_stream_lines=explode("\n",$encoded_stream_content);
+                $old_stream_line_count=$lMax-$lMin+1;
+                array_splice($entries,$lMin,$old_stream_line_count,$new_stream_lines);
+                $line_shift=count($new_stream_lines)-$old_stream_line_count;
+                $this->shift_widget_stream_lines($lMax,$line_shift);
 
-                    if($l==$lMin) {
-                        $entries[$lMin]=$stream_content;
+                $size_shift=$NewLen-$OldLen;
 
-                        //Update the length
-                        $stream_def_line=$stream["length"]["line"];
-                        $stream_def=$entries[$stream_def_line];
+                //Update the length
+                $stream_def_line=$stream["length"]["line"];
+                $stream_def=$entries[$stream_def_line];
+                $updated_stream_def=preg_replace("/\/Length\s*(\d+)/",'/Length '.$NewLen,$stream_def,1);
+                if(is_string($updated_stream_def)) {
+                    $entries[$stream_def_line]=$updated_stream_def;
+                    $size_shift+=strlen($updated_stream_def)-strlen($stream_def);
+                }
 
-                        $stream_def=preg_replace("/\/Length\s*(\d+)/",'/Length '.$NewLen,$stream_def);
-
-                        $entries[$stream_def_line]=$stream_def;
-
-                        //update the filter type...
-                        $stream_def_line=$stream["filters"]["line"];
-                        $stream_def=$entries[$stream_def_line];
-                        if($verbose_parsing) {
-                            echo "<pre>";
-                            echo htmlentities(print_r($stream_def,true));
-                            echo "</pre>";
-                        }
-
-                        //...to filter Standard
-                        $stream_def=preg_replace($this->streams_filter,'/Standard ',$stream_def);
-
-                        $entries[$stream_def_line]=$stream_def;
-
-                        //Update the shift
-                        $size_shift=$NewLen-$OldLen;
-                        $this->apply_offset_shift_from_object($obj,$size_shift);
-
-                    }else if($lmin!=$lMax) {
-                        unset($entries[$l]);
-                    }
+                if($size_shift!=0) {
+                    $this->shift=$this->shift+$size_shift;
+                    $this->apply_offset_shift_from_object($stream["object"],$size_shift);
                 }
 
                 if($verbose_parsing) {
-                    var_dump($stream_content);
+                    var_dump($decoded_stream_content);
                 }
+
+                return $size_shift;
             }
+
+            return 0;
+        }
+
+        /**
+         * Encode a string operand for use in a text appearance stream.
+         *
+         * @param string $value
+         * @param bool $prefer_hex
+         * @return string
+         */
+        function _format_text_stream_value($value, $prefer_hex)
+        {
+            if($prefer_hex || $this->isUTF8) {
+                return '<' . $this->_encode_value($value) . '>';
+            }
+
+            $escaped_value=str_replace("\\","\\\\",$value);
+            $escaped_value=str_replace("(","\\(",$escaped_value);
+            $escaped_value=str_replace(")","\\)",$escaped_value);
+            $escaped_value=str_replace("\r","\\r",$escaped_value);
+            $escaped_value=str_replace("\n","\\n",$escaped_value);
+            return '(' . $escaped_value . ')';
         }
 
         /**
@@ -1815,9 +2094,16 @@ if (!call_user_func_array('class_exists', $__tmp)) {
          */
         function _set_text_value($stream,$value) {
             //---------------------------------------
-            $chunks=preg_split("/(\s*Td\s+[\<\(])([^\>\)]+)([\>\)]\s+Tj)/",$stream,0,PREG_SPLIT_DELIM_CAPTURE);
-            $chunks[2]=$value;
-            $stream=implode($chunks,'');
+            $THIS = $this;
+            $stream=preg_replace_callback(
+                '/(\bTd\s*)(<[^>]*>|\((?:\\\\.|[^\\\\)])*\))(\s*Tj\b)/s',
+                function($matches) use ($THIS, $value) {
+                    $prefer_hex=($matches[2][0] == '<');
+                    return $matches[1] . $THIS->_format_text_stream_value($value,$prefer_hex) . $matches[3];
+                },
+                $stream,
+                1
+            );
             return $stream;
         }
 
@@ -1873,12 +2159,14 @@ if (!call_user_func_array('class_exists', $__tmp)) {
             $ap_d_no='';
             $ap_line=0;
             $ap_d_line=0;
+            $ap_normal_object=0;
             $as='';
             //ENDFIX
             $parent_obj=0;
             $fields_line=-1;
             $type='';
             $subtype='';
+            $field_type='';
             $name='';
             $value='';
             $default_maxLen=0; //No limit
@@ -1895,6 +2183,7 @@ if (!call_user_func_array('class_exists', $__tmp)) {
             $creationDate='';
             $object_names_by_id=array();
             $pending_widgets_by_parent=array();
+            $streams_by_object=array();
 
             $verbose_parsing=($this->verbose&&($this->verbose_level>3));
             $verbose_decoding=($this->verbose&&($this->verbose_level>4));
@@ -1923,6 +2212,7 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                         $object["infos"]=array();
                         $object["infos"]["object"]=intval($obj);
                         $object["infos"]["tooltip"]=$default_tooltip_line;
+                        $object["infos"]["widgets"]=array();
 
                     } else {
 
@@ -1939,7 +2229,19 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                                 //We process fields here, save only Annotations texts that are supported by now
                                 if($subtype=="Widget") {
                                     $name_inherited_from_parent = false;
-                                    if(($name == '') && $this->useCheckboxParser && isset($object["infos"]["parent_obj"])) {
+                                    if($ap_normal_object) {
+                                        $object["infos"]["widgets"]=$this->merge_field_widgets(
+                                            $object["infos"]["widgets"],
+                                            array(array("object"=>intval($obj), "appearance_normal_object"=>$ap_normal_object))
+                                        );
+                                    } else {
+                                        $object["infos"]["widgets"]=$this->merge_field_widgets(
+                                            $object["infos"]["widgets"],
+                                            array(array("object"=>intval($obj)))
+                                        );
+                                    }
+
+                                    if(($name == '') && isset($object["infos"]["parent_obj"])) {
                                         $parent_obj_id = intval($object["infos"]["parent_obj"]);
                                         if(isset($object_names_by_id[$parent_obj_id]) && $object_names_by_id[$parent_obj_id] != '') {
                                             $name = $object_names_by_id[$parent_obj_id];
@@ -1954,12 +2256,8 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                                     }
 
                                     if($name != '') {
-                                        if($name_inherited_from_parent && array_key_exists("$name", $lines)) {
-                                            if($verbose_parsing) $this->dumpContent("$type $subtype (obj id=$obj) inherited name '$name' but it is already bound, keeping first widget.");
-                                        } else {
-                                            $lines["$name"]=$object;
-                                            if($verbose_parsing) $this->dumpContent("$type $subtype (obj id=$obj) is a text annotation of name '$name', saves it.");
-                                        }
+                                        $this->register_field_object($lines,$name,$object);
+                                        if($verbose_parsing) $this->dumpContent("$type $subtype (obj id=$obj) is a widget annotation of name '$name', saves it.");
                                     }//else
 //										$this->Error("$type $subtype (obj id=$obj) is a text annotation without a name, this cannot be.");
 
@@ -1970,6 +2268,9 @@ if (!call_user_func_array('class_exists', $__tmp)) {
 //									if(!array_key_exists("current",$values)) $this->Error("Cannot find value (/V) for field $name");
 //									if(!array_key_exists("default",$values)) $this->Error("Cannot find default value (/DV) for field $name");
 
+                                }else if(($field_type=="Tx") && ($name != '')) {
+                                    $this->register_field_object($lines,$name,$object);
+                                    if($verbose_parsing) $this->dumpContent("Object $type $subtype (obj id=$obj) is a text field of name '$name', saves it.");
                                 }else
                                     if($verbose_parsing) $this->dumpContent("Object $type $subtype (obj id=$obj) is not supported");
 
@@ -1981,11 +2282,13 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                                 $ap_d_no='';
                                 $ap_line=0;
                                 $ap_d_line=0;
+                                $ap_normal_object=0;
                                 $as='';
                                 //ENDFIX
                                 $parent_obj=0;
                                 $type='';
                                 $subtype='';
+                                $field_type='';
                                 $name='';
                                 $value='';
                                 $maxLen=0;
@@ -2037,13 +2340,13 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                                         }else {
                                             $stream["end"]=$Counter-1;
 
-                                            $stream["content"]=implode("\n",array_slice($entries,$stream["start"],$stream["end"]-$stream["start"]+1));
+                                            $stream["raw"]=implode("\n",array_slice($entries,$stream["start"],$stream["end"]-$stream["start"]+1));
 
 
 
                                             $filters=$stream["filters"]["type"];
                                             $f=count($filters);
-                                            $stream_content=$stream["content"];
+                                            $stream_content=$stream["raw"];
 
                                             //var_dump($filters);
 
@@ -2077,6 +2380,9 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                                                 $this->dumpContent($CurLine,"->Closing stream for object($obj) at line $Counter");
                                             }
 
+                                            $stream["object"]=$obj;
+                                            $stream["content"]=$stream_content;
+                                            $streams_by_object[$obj]=$stream;
                                             $stream=array();
                                         }
                                     }else if($stream["start"]>0){
@@ -2110,14 +2416,35 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                                     //=== DEFINITION ====
                                     //preg_match("/^\/Type\s+\/(\w+)$/",$CurLine,$match)
                                     $match=array();
+                                    if(!$parent_obj&&$this->extract_pdf_definition_value("/Parent", $CurLine, $match)) {
+                                        $parent_obj = intval($match[1]);
+                                        if ($verbose_parsing) {
+                                            echo("<br>Found Parent is '<i>$parent_obj</i>'");
+                                        }
+                                        $object["infos"]["parent_obj"] = $parent_obj;
+                                    }
+
+                                    if (!$ap_line && preg_match('/(^|\s)\/AP\b/', $CurLine)) {
+                                        if ($verbose_parsing) {
+                                            echo("<br>Found AP Line '<i>$Counter</i>'");
+                                        }
+                                        $ap_line = $Counter;
+                                    }
+
+                                    if (($ap_line || preg_match('/(^|\s)\/AP\b/', $CurLine))
+                                        && !$ap_normal_object
+                                        && preg_match('/\/N\s+(\d+)\s+\d+\s+R\b/', $CurLine, $normal_match)) {
+                                        $ap_normal_object = intval($normal_match[1]);
+                                        $object["infos"]["appearance_normal_object"] = $ap_normal_object;
+                                    }
+
+                                    if(($field_type=='')&&preg_match("/^\/FT\s+\/(\w+)/",$CurLine,$match)) {
+                                        $field_type=$match[1];
+                                        $object["infos"]["field_type"]=$field_type;
+                                    }
+
                                     //FIX: parse checkbox definition
                                     if($this->useCheckboxParser && ('' == $ap_d_yes || '' == $ap_d_no || '' == $as)) {
-                                        if (!$ap_line && preg_match('/(^|\s)\/AP\b/', $CurLine)) {
-                                            if ($verbose_parsing) {
-                                                echo("<br>Found AP Line '<i>$Counter</i>'");
-                                            }
-                                            $ap_line = $Counter;
-                                        }
                                         if (!$ap_d_line && preg_match('/(^|\s)\/D\b/', $CurLine)) {
                                             if ($verbose_parsing) {
                                                 echo("<br>Found D Line '<i>$Counter</i>'");
@@ -2139,13 +2466,6 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                                             }
                                             $object["infos"]["checkbox_yes"] = $ap_d_yes;
                                             $object["infos"]["checkbox_no"] = $ap_d_no;
-                                        }
-                                        if (!$parent_obj&&$this->extract_pdf_definition_value("/Parent", $CurLine, $match)) {
-                                            $parent_obj = intval($match[1]);
-                                            if ($verbose_parsing) {
-                                                echo("<br>Found Parent is '<i>$parent_obj</i>'");
-                                            }
-                                            $object["infos"]["parent_obj"] = $parent_obj;
                                         }
                                         if (($ap_line==$Counter-4)&&($ap_d_line==$Counter-2)&&($ap_d_yes=='')&&$this->extract_pdf_definition_value("name", $CurLine, $match)) {
                                             $ap_d_yes=$match[1];
@@ -2184,6 +2504,7 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                                         if(($subtype=='')&&$this->extract_pdf_definition_value("/Subtype",$CurLine,$match)) {
 
                                             $subtype=$match[1];
+                                            $object["infos"]["subtype"]=$subtype;
                                             if($verbose_parsing) echo("<br>Object's subType is '<i>$subtype</i>'");
 
                                         }
@@ -2405,20 +2726,40 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                 }
             }
 
-            if($this->useCheckboxParser && count($pending_widgets_by_parent) > 0) {
+            if(count($pending_widgets_by_parent) > 0) {
                 foreach($pending_widgets_by_parent as $parent_obj_id => $widgets) {
                     if(!isset($object_names_by_id[$parent_obj_id])) {
                         continue;
                     }
                     $parent_name = $object_names_by_id[$parent_obj_id];
-                    if(($parent_name == '') || array_key_exists($parent_name, $lines)) {
+                    if($parent_name == '') {
                         continue;
                     }
-                    $widget = $widgets[0];
-                    $widget["infos"]["name"] = $parent_name;
-                    $lines[$parent_name] = $widget;
-                    if($verbose_parsing) $this->dumpContent("Binding unnamed widget from parent object($parent_obj_id) to name '$parent_name'.");
+
+                    foreach($widgets as $widget) {
+                        $widget["infos"]["name"] = $parent_name;
+                        $this->register_field_object($lines,$parent_name,$widget);
+                    }
+
+                    if($verbose_parsing) $this->dumpContent("Binding unnamed widget(s) from parent object($parent_obj_id) to name '$parent_name'.");
                 }
+            }
+
+            foreach($lines as $field_name => $field_definition) {
+                if($field_name == '$_XREF_$' || !isset($field_definition["infos"]["widgets"])) {
+                    continue;
+                }
+
+                $widgets=array();
+                foreach($field_definition["infos"]["widgets"] as $widget) {
+                    if(isset($widget["appearance_normal_object"])
+                        && isset($streams_by_object[$widget["appearance_normal_object"]])
+                        && $this->is_text_stream($streams_by_object[$widget["appearance_normal_object"]]["content"])) {
+                        $widget["appearance_normal_stream"]=$streams_by_object[$widget["appearance_normal_object"]];
+                    }
+                    $widgets[]=$widget;
+                }
+                $lines[$field_name]["infos"]["widgets"]=$widgets;
             }
 
             // Remove checkbox parents from fields line, to make sure they will still be displayed, even if /NeedAppearance is set to true.
