@@ -1340,7 +1340,7 @@ if (!call_user_func_array('class_exists', $__tmp)) {
             );
 
             foreach ($line_values as $line_index => $line_value) {
-                $operand = '<' . $this->_encode_value($line_value) . '>';
+                $operand = '<' . $this->_bin2hex($this->encode_text_stream_bytes($line_value)) . '>';
                 if ($line_index === 0) {
                     $stream_lines[] = '1 ' . $this->format_pdf_number($start_y) . ' Td';
                 } else {
@@ -2467,16 +2467,54 @@ if (!call_user_func_array('class_exists', $__tmp)) {
          */
         function _format_text_stream_value($value, $prefer_hex)
         {
-            if($prefer_hex || $this->isUTF8) {
-                return '<' . $this->_encode_value($value) . '>';
+            $appearance_bytes = $this->encode_text_stream_bytes($value);
+
+            if($prefer_hex) {
+                return '<' . $this->_bin2hex($appearance_bytes) . '>';
             }
 
-            $escaped_value=str_replace("\\","\\\\",$value);
+            $escaped_value=str_replace("\\","\\\\",$appearance_bytes);
             $escaped_value=str_replace("(","\\(",$escaped_value);
             $escaped_value=str_replace(")","\\)",$escaped_value);
             $escaped_value=str_replace("\r","\\r",$escaped_value);
             $escaped_value=str_replace("\n","\\n",$escaped_value);
             return '(' . $escaped_value . ')';
+        }
+
+        /**
+         * Encode text for widget appearance streams using simple font bytes.
+         *
+         * /V values remain UTF-16BE when Load(..., true) is used, but appearance
+         * streams must match the widget font encoding or PDFKit will render the BOM.
+         *
+         * @param string $value
+         * @return string
+         */
+        function encode_text_stream_bytes($value)
+        {
+            if(!$this->isUTF8) {
+                return $value;
+            }
+
+            $encodings = array(
+                'Windows-1252//TRANSLIT//IGNORE',
+                'ISO-8859-1//TRANSLIT//IGNORE',
+                'ASCII//TRANSLIT//IGNORE',
+            );
+
+            foreach($encodings as $encoding) {
+                $encoded = @iconv('UTF-8', $encoding, $value);
+                if(($encoded !== false) && ($encoded !== null) && ($encoded !== '')) {
+                    return $encoded;
+                }
+            }
+
+            $encoded = @iconv('UTF-8', 'Windows-1252//IGNORE', $value);
+            if(($encoded !== false) && ($encoded !== null)) {
+                return $encoded;
+            }
+
+            return preg_replace('/[^\x20-\x7E]/', '?', $value);
         }
 
         /**

@@ -18,7 +18,19 @@ function assert_true($condition, $message) {
     }
 }
 
-function encode_pdf_hex_value($value) {
+function encode_field_hex_value($value, $isUTF8) {
+    if ($isUTF8) {
+        return strtoupper(bin2hex("\xFE\xFF" . iconv('UTF-8', 'UTF-16BE', $value)));
+    }
+
+    return strtoupper(bin2hex($value));
+}
+
+function encode_appearance_hex_value($value, $isUTF8) {
+    if ($isUTF8) {
+        return strtoupper(bin2hex(iconv('UTF-8', 'Windows-1252//TRANSLIT//IGNORE', $value)));
+    }
+
     return strtoupper(bin2hex($value));
 }
 
@@ -66,34 +78,50 @@ function find_pdf_object_by_field_name($output, $fieldName) {
 }
 
 $fpdmClass = class_exists('\\Magicplan\\Fpdm\\FPDM') ? '\\Magicplan\\Fpdm\\FPDM' : 'FPDM';
-$hukPdf = __DIR__ . '/../Schadenformular HUK LW.cleaned.pdf';
+$templatePdf = __DIR__ . '/../src/template.pdf';
+$isUTF8 = true;
 $fields = array(
-    'Versicherungsnehmer' => 'Max Mustermann',
-    'Telefon' => '030123456',
-    'Datum' => '17.03.2026',
-    'Bemerkungen' => 'Test visible on iOS',
-    'Ergebnis' => 'Probeausgabe',
+    'name' => 'Jörg Müller',
+    'address' => 'Straße 1',
+    'city' => 'Köln',
+    'phone' => '030123456',
 );
 
+$source = file_get_contents($templatePdf);
+assert_true(is_string($source) && $source !== '', 'Expected template PDF fixture content.');
+
+$noApSource = preg_replace('/\s*\/AP << \/N \d+ 0 R >>/m', '', $source, -1, $replacements);
+assert_true(is_string($noApSource) && $replacements >= 4, 'Expected to strip existing widget /AP entries from the template fixture.');
+
+$tempPdf = tempnam(sys_get_temp_dir(), 'fpdm-noap-');
+assert_true($tempPdf !== false, 'Unable to create temporary PDF fixture.');
+if (file_put_contents($tempPdf, $noApSource) === false) {
+    @unlink($tempPdf);
+    fail('Unable to write temporary no-AP PDF fixture.');
+}
+
 try {
-    $pdf = new $fpdmClass($hukPdf);
-    $pdf->Load($fields, false);
+    $pdf = new $fpdmClass($tempPdf);
+    $pdf->Load($fields, $isUTF8);
     $pdf->Merge();
     $output = $pdf->Output('S');
 } catch (\Exception $e) {
-    fail('HUK merge unexpectedly failed: [' . get_class($e) . '] ' . $e->getMessage());
+    @unlink($tempPdf);
+    fail('Generated appearance merge unexpectedly failed: [' . get_class($e) . '] ' . $e->getMessage());
 }
 
-assert_true(is_string($output) && strlen($output) > 0, 'Expected a non-empty HUK PDF output.');
+@unlink($tempPdf);
+
+assert_true(is_string($output) && strlen($output) > 0, 'Expected a non-empty generated-appearance PDF output.');
 assert_true(strpos($output, '/NeedAppearances true') !== false, 'Expected /NeedAppearances true to be inserted into the AcroForm dictionary.');
 
 foreach ($fields as $fieldName => $fieldValue) {
     $fieldObject = find_pdf_object_by_field_name($output, $fieldName);
     assert_true(is_array($fieldObject), 'Expected to find field object for ' . $fieldName . '.');
 
-    $encodedValue = encode_pdf_hex_value($fieldValue);
+    $encodedFieldValue = encode_field_hex_value($fieldValue, $isUTF8);
     assert_true(
-        strpos($fieldObject['body'], '/V <' . $encodedValue . '>') !== false,
+        strpos($fieldObject['body'], '/V <' . $encodedFieldValue . '>') !== false,
         'Expected field ' . $fieldName . ' to contain the updated /V value.'
     );
 
@@ -104,10 +132,16 @@ foreach ($fields as $fieldName => $fieldValue) {
 
     $appearanceObject = find_pdf_object_by_id($output, intval($appearanceMatch[1]));
     assert_true(is_string($appearanceObject), 'Expected appearance object ' . $appearanceMatch[1] . ' for field ' . $fieldName . '.');
+
+    $encodedAppearanceValue = encode_appearance_hex_value($fieldValue, $isUTF8);
     assert_true(
-        strpos($appearanceObject, '<' . $encodedValue . '> Tj') !== false,
+        strpos($appearanceObject, '<' . $encodedAppearanceValue . '> Tj') !== false,
         'Expected appearance object ' . $appearanceMatch[1] . ' to contain the rendered text for field ' . $fieldName . '.'
+    );
+    assert_true(
+        strpos($appearanceObject, '<FEFF') === false,
+        'Appearance object ' . $appearanceMatch[1] . ' for field ' . $fieldName . ' must not contain a UTF-16 BOM.'
     );
 }
 
-fwrite(STDOUT, "HUK text widget generation regression test passed.\n");
+fwrite(STDOUT, "Generated text widget appearance regression test passed.\n");

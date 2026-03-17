@@ -42,7 +42,7 @@
     "test": [
       "@php tests/merge_exception_smoke.php",
       "@php tests/text_appearance_regression.php",
-      "@php tests/huk_text_widget_generation_regression.php"
+      "@php tests/generated_text_widget_appearance_regression.php"
     ]
   },
   "keywords": [

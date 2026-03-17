@@ -21,7 +21,8 @@ function assert_true($condition, $message) {
 $fpdmClass = class_exists('\\Magicplan\\Fpdm\\FPDM') ? '\\Magicplan\\Fpdm\\FPDM' : 'FPDM';
 $templatePdf = __DIR__ . '/../src/template.pdf';
 $value = 'Jörg';
-$encodedValue = strtoupper(bin2hex("\xFE\xFF" . iconv('UTF-8', 'UTF-16BE', $value)));
+$encodedFieldValue = strtoupper(bin2hex("\xFE\xFF" . iconv('UTF-8', 'UTF-16BE', $value)));
+$encodedAppearanceValue = strtoupper(bin2hex(iconv('UTF-8', 'Windows-1252//TRANSLIT//IGNORE', $value)));
 
 try {
     $pdf = new $fpdmClass($templatePdf);
@@ -34,17 +35,21 @@ try {
 
 assert_true(is_string($output) && strlen($output) > 0, 'Expected a non-empty PDF output.');
 
-$fieldPattern = '/(\d+)\s+0\s+obj\s*<<.*?\/T \(name\).*?\/V <' . preg_quote($encodedValue, '/') . '>.*?\/AP << \/N (\d+)\s+0\s+R >>/s';
+$fieldPattern = '/(\d+)\s+0\s+obj\s*<<.*?\/T \(name\).*?\/V <' . preg_quote($encodedFieldValue, '/') . '>.*?\/AP << \/N (\d+)\s+0\s+R >>/s';
 assert_true(
     preg_match($fieldPattern, $output, $fieldMatch) === 1,
     'Expected the filled field object to contain both the UTF-8 /V value and an /AP /N reference.'
 );
 
 $appearanceObjectId = $fieldMatch[2];
-$appearancePattern = '/' . preg_quote($appearanceObjectId, '/') . '\s+0\s+obj\s*<<.*?stream\s.*?<' . preg_quote($encodedValue, '/') . '>\s*Tj\s.*?endstream/s';
+$appearancePattern = '/' . preg_quote($appearanceObjectId, '/') . '\s+0\s+obj\s*<<.*?stream\s.*?<' . preg_quote($encodedAppearanceValue, '/') . '>\s*Tj\s.*?endstream/s';
 assert_true(
     preg_match($appearancePattern, $output) === 1,
     'Expected the widget normal appearance stream to be updated with the filled value.'
+);
+assert_true(
+    strpos($output, '<FEFF004A00F600720067> Tj') === false,
+    'Appearance streams must not embed the UTF-16 BOM, or PDFKit renders junk glyphs at the front.'
 );
 
 fwrite(STDOUT, "Text appearance regression test passed.\n");
