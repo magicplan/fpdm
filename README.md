@@ -34,6 +34,24 @@ The preferred way of making FPDM available in your app is to install it via comp
 
 `composer require tmw/fpdm`
 
+## Testing
+
+Run the test suite from the repository root with:
+
+`composer test`
+
+If dependencies are not installed yet, run:
+
+`composer install`
+
+The current test suite covers:
+
+- basic merge and error handling (`tests/merge_exception_smoke.php`)
+- updating existing text widget appearance streams (`tests/text_appearance_regression.php`)
+- generating text widget appearances for forms that do not define `/AP` up front, including the bundled HUK regression PDF (`tests/huk_text_widget_generation_regression.php`)
+
+You can also run the test scripts individually with `php tests/<script>.php`.
+
 ## Usage
 
 ### Composer (autoload)

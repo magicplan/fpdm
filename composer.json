@@ -38,6 +38,13 @@
   "require": {
     "php": ">=5.3.0"
   },
+  "scripts": {
+    "test": [
+      "@php tests/merge_exception_smoke.php",
+      "@php tests/text_appearance_regression.php",
+      "@php tests/huk_text_widget_generation_regression.php"
+    ]
+  },
   "keywords": [
     "FPDM",
     "PDF",

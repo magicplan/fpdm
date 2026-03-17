@@ -126,6 +126,8 @@ if (!call_user_func_array('class_exists', $__tmp)) {
 
         var $needAppearancesTrue = false;	//boolean, indicates if /NeedAppearances is already set to true
         var $isUTF8 = false;				//boolean (true for UTF-8, false for ISO-8859-1)
+        var $acroform_default_appearance = '';
+        var $acroform_font_refs = array();
         var $n;
         /**
          * Constructor
@@ -178,6 +180,8 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                     //$this->dumpContent($this->streams_filter);
 
                     $this->info=array();
+                    $this->acroform_default_appearance = '';
+                    $this->acroform_font_refs = array();
 
                     //Debug modes
                     $this->verbose=$verbose;
@@ -1230,14 +1234,376 @@ if (!call_user_func_array('class_exists', $__tmp)) {
             $widget_count = count($this->value_entries[$name]["infos"]["widgets"]);
             for ($widget_index = 0; $widget_index < $widget_count; $widget_index++) {
                 $widget = $this->value_entries[$name]["infos"]["widgets"][$widget_index];
-                if (!isset($widget["appearance_normal_stream"]) || !is_array($widget["appearance_normal_stream"])) {
+                if (isset($widget["appearance_normal_stream"]) && is_array($widget["appearance_normal_stream"])) {
+                    $offset_shift += $this->change_stream_value($widget["appearance_normal_stream"], $value);
                     continue;
                 }
 
-                $offset_shift += $this->change_stream_value($widget["appearance_normal_stream"], $value);
+                $offset_shift += $this->create_text_widget_appearance($name, $widget_index, $value);
             }
 
             return $offset_shift;
+        }
+
+        /**
+         * Build a text widget appearance for widgets that do not define /AP.
+         *
+         * @param string $field_name
+         * @param int $widget_index
+         * @param string $value
+         * @return int
+         */
+        function create_text_widget_appearance($field_name, $widget_index, $value)
+        {
+            if (!isset($this->value_entries[$field_name]["infos"]["widgets"][$widget_index])) {
+                return 0;
+            }
+
+            $widget = $this->value_entries[$field_name]["infos"]["widgets"][$widget_index];
+            $field_definition = $this->value_entries[$field_name];
+            $rect = isset($widget["rect"]) ? $widget["rect"] : (isset($field_definition["infos"]["rect"]) ? $field_definition["infos"]["rect"] : null);
+            if (!is_array($rect) || count($rect) !== 4) {
+                return 0;
+            }
+
+            $default_appearance = isset($widget["default_appearance"])
+                ? $widget["default_appearance"]
+                : (isset($field_definition["infos"]["default_appearance"]) ? $field_definition["infos"]["default_appearance"] : $this->acroform_default_appearance);
+
+            $appearance_stream = $this->build_text_widget_appearance_stream($rect, $default_appearance, $value);
+            $appearance_object_id = count($this->offsets) + 1;
+            $widget_shift = $this->insert_widget_appearance_reference($widget, $appearance_object_id);
+            $appearance_object = $this->append_pdf_stream_object($appearance_object_id, $appearance_stream["dictionary"], $appearance_stream["stream"]);
+            $stream_line_count = count($appearance_stream["stream_lines"]);
+            $stream_length_line = $appearance_object["header_line"] + $appearance_stream["length_line_offset"] + 1;
+
+            $this->value_entries[$field_name]["infos"]["widgets"][$widget_index]["appearance_normal_object"] = $appearance_object_id;
+            $this->value_entries[$field_name]["infos"]["widgets"][$widget_index]["appearance_normal_stream"] = array(
+                "object" => $appearance_object_id,
+                "length" => array(
+                    "line" => $stream_length_line,
+                    "value" => strlen($appearance_stream["stream"]),
+                ),
+                "filters" => array(
+                    "type" => array("Standard"),
+                ),
+                "start" => $stream_length_line + 3,
+                "end" => $stream_length_line + 2 + $stream_line_count,
+                "raw" => $appearance_stream["stream"],
+                "content" => $appearance_stream["stream"],
+            );
+
+            return $widget_shift;
+        }
+
+        /**
+         * Build the appearance stream and dictionary for a text widget.
+         *
+         * @param array $rect
+         * @param string $default_appearance
+         * @param string $value
+         * @return array
+         */
+        function build_text_widget_appearance_stream($rect, $default_appearance, $value)
+        {
+            $width = max(1, floatval($rect[2]) - floatval($rect[0]));
+            $height = max(1, floatval($rect[3]) - floatval($rect[1]));
+            $font_name = $this->extract_default_appearance_font_name($default_appearance);
+            if ($font_name == '') {
+                $font_name = 'Helv';
+            }
+
+            $font_size = $this->extract_default_appearance_font_size($default_appearance);
+            if ($font_size <= 0) {
+                $font_size = max(4, min(12, $height - 2));
+                if ($default_appearance != '') {
+                    $default_appearance = preg_replace('/\/' . preg_quote($font_name, '/') . '\s+0(\.0+)?\s+Tf/', '/' . $font_name . ' ' . $this->format_pdf_number($font_size) . ' Tf', $default_appearance, 1);
+                }
+            }
+            if ($default_appearance == '') {
+                $default_appearance = '/' . $font_name . ' ' . $this->format_pdf_number($font_size) . ' Tf 0 g';
+            }
+
+            $resource_dict = $this->build_widget_font_resources($font_name);
+            $line_values = preg_split("/\r\n|\r|\n/", (string)$value);
+            if ($line_values === false || count($line_values) === 0) {
+                $line_values = array('');
+            }
+
+            $leading = max(1, round($font_size * 1.2, 3));
+            $start_y = max(1, $height - $font_size - 1);
+            $stream_lines = array(
+                "/Tx BMC",
+                "q",
+                "BT",
+                $default_appearance,
+            );
+
+            foreach ($line_values as $line_index => $line_value) {
+                $operand = '<' . $this->_encode_value($line_value) . '>';
+                if ($line_index === 0) {
+                    $stream_lines[] = '1 ' . $this->format_pdf_number($start_y) . ' Td';
+                } else {
+                    $stream_lines[] = '0 -' . $this->format_pdf_number($leading) . ' Td';
+                }
+                $stream_lines[] = $operand . ' Tj';
+            }
+
+            $stream_lines[] = "ET";
+            $stream_lines[] = "Q";
+            $stream_lines[] = "EMC";
+
+            $stream = implode("\n", $stream_lines);
+            $dictionary_lines = array(
+                "<<",
+                "/Type /XObject",
+                "/Subtype /Form",
+                "/FormType 1",
+                "/BBox [ 0 0 " . $this->format_pdf_number($width) . " " . $this->format_pdf_number($height) . " ]",
+                "/Resources " . $resource_dict,
+                "/Length " . strlen($stream),
+                ">>",
+            );
+
+            return array(
+                "dictionary" => $dictionary_lines,
+                "stream" => $stream,
+                "stream_lines" => $stream_lines,
+                "length_line_offset" => 6,
+            );
+        }
+
+        /**
+         * Create the /Resources entry needed for a text appearance stream.
+         *
+         * @param string $font_name
+         * @return string
+         */
+        function build_widget_font_resources($font_name)
+        {
+            if (isset($this->acroform_font_refs[$font_name])) {
+                return "<< /Font << /" . $font_name . " " . $this->acroform_font_refs[$font_name] . " 0 R >> >>";
+            }
+
+            $base_font = ($font_name == 'ZaDb') ? 'ZapfDingbats' : 'Helvetica';
+            return "<< /Font << /" . $font_name . " << /Type /Font /Subtype /Type1 /BaseFont /" . $base_font . " >> >> >>";
+        }
+
+        /**
+         * Extract the font resource name from a DA string.
+         *
+         * @param string $default_appearance
+         * @return string
+         */
+        function extract_default_appearance_font_name($default_appearance)
+        {
+            if (preg_match('/\/([^\s]+)\s+[-+]?\d*\.?\d+\s+Tf/', $default_appearance, $match)) {
+                return $match[1];
+            }
+
+            return '';
+        }
+
+        /**
+         * Extract the font size from a DA string.
+         *
+         * @param string $default_appearance
+         * @return float
+         */
+        function extract_default_appearance_font_size($default_appearance)
+        {
+            if (preg_match('/\/[^\s]+\s+([-+]?\d*\.?\d+)\s+Tf/', $default_appearance, $match)) {
+                return floatval($match[1]);
+            }
+
+            return 0;
+        }
+
+        /**
+         * Format a numeric value for PDF output.
+         *
+         * @param float $number
+         * @return string
+         */
+        function format_pdf_number($number)
+        {
+            $formatted = sprintf('%.3F', $number);
+            $formatted = rtrim(rtrim($formatted, '0'), '.');
+            return ($formatted === '') ? '0' : $formatted;
+        }
+
+        /**
+         * Append a new stream object before the xref table.
+         *
+         * @param array $dictionary_lines
+         * @param string $stream
+         * @return int
+         */
+        function append_pdf_stream_object($object_id, $dictionary_lines, $stream)
+        {
+            $xref_table = $this->get_xref_table();
+            $xref_line = $xref_table["infos"]["line"];
+            $old_count = $xref_table["infos"]["count"];
+            $new_object_offset = $this->get_xref_start_value();
+            $stream_lines = explode("\n", $stream);
+            $object_lines = array_merge(
+                array($object_id . ' 0 obj'),
+                $dictionary_lines,
+                array('stream'),
+                $stream_lines,
+                array('endstream', 'endobj')
+            );
+
+            array_splice($this->pdf_entries, $xref_line, 0, $object_lines);
+
+            $inserted_bytes = $this->get_pdf_entries_length($object_lines);
+            $line_shift = count($object_lines);
+
+            $this->value_entries['$_XREF_$']["infos"]["line"] += $line_shift;
+            if (isset($this->value_entries['$_XREF_$']["infos"]["start"]["line"])) {
+                $this->value_entries['$_XREF_$']["infos"]["start"]["line"] += $line_shift;
+            }
+
+            $this->offsets[$object_id] = $new_object_offset;
+            $new_position = count($this->shifts);
+            $this->positions[$object_id] = $new_position;
+            $this->shifts[$new_position] = 0;
+            $this->shift += $inserted_bytes;
+
+            $xref_line = $this->value_entries['$_XREF_$']["infos"]["line"];
+            $new_count = $old_count + 1;
+            $xref_count_line = $xref_line + 1;
+            $old_xref_count_line = $this->pdf_entries[$xref_count_line];
+            $updated_xref_count_line = preg_replace('/^(\d+)\s+\d+$/', '$1 ' . ($new_count + 1), $old_xref_count_line, 1);
+            if (is_string($updated_xref_count_line) && $updated_xref_count_line !== $old_xref_count_line) {
+                $this->pdf_entries[$xref_count_line] = $updated_xref_count_line;
+                $this->shift += strlen($updated_xref_count_line) - strlen($old_xref_count_line);
+            }
+
+            $new_xref_entry_line = $xref_line + 3 + $old_count;
+            array_splice($this->pdf_entries, $new_xref_entry_line, 0, array('0000000000 00000 n '));
+            $this->shift += strlen("0000000000 00000 n \n");
+            if (isset($this->value_entries['$_XREF_$']["infos"]["start"]["line"])) {
+                $this->value_entries['$_XREF_$']["infos"]["start"]["line"] += 1;
+            }
+            $this->value_entries['$_XREF_$']["infos"]["count"] = $new_count;
+
+            $this->update_trailer_size($new_count + 1);
+
+            return array(
+                "object_id" => $object_id,
+                "header_line" => $xref_line - $line_shift,
+            );
+        }
+
+        /**
+         * Update the trailer /Size value after adding objects.
+         *
+         * @param int $size
+         */
+        function update_trailer_size($size)
+        {
+            $xref_line = $this->value_entries['$_XREF_$']["infos"]["line"];
+            $count = count($this->pdf_entries);
+
+            for ($line_index = $xref_line; $line_index < $count; $line_index++) {
+                if (!preg_match('/\/Size\s+\d+/', $this->pdf_entries[$line_index])) {
+                    continue;
+                }
+
+                $line_content = $this->pdf_entries[$line_index];
+                $updated_line = preg_replace('/\/Size\s+\d+/', '/Size ' . $size, $line_content, 1);
+                if (is_string($updated_line) && $updated_line !== $line_content) {
+                    $this->pdf_entries[$line_index] = $updated_line;
+                    $this->shift += strlen($updated_line) - strlen($line_content);
+                }
+                break;
+            }
+        }
+
+        /**
+         * Insert /AP /N reference into an existing widget dictionary.
+         *
+         * @param array $widget
+         * @param int $appearance_object_id
+         * @return int
+         */
+        function insert_widget_appearance_reference($widget, $appearance_object_id)
+        {
+            if (!isset($widget["object"])) {
+                return 0;
+            }
+
+            $object_id = intval($widget["object"]);
+            $header_line = isset($widget["header_line"]) ? intval($widget["header_line"]) : -1;
+            if ($header_line < 0) {
+                $header_pattern = '/^' . preg_quote((string)$object_id, '/') . '\s+0\s+obj\b/';
+                foreach ($this->pdf_entries as $line_index => $line_content) {
+                    if (preg_match($header_pattern, trim($line_content))) {
+                        $header_line = $line_index;
+                        break;
+                    }
+                }
+            }
+
+            if ($header_line < 0) {
+                return 0;
+            }
+
+            for ($line_index = $header_line + 1, $line_count = count($this->pdf_entries); $line_index < $line_count; $line_index++) {
+                $line_content = $this->pdf_entries[$line_index];
+                if (preg_match('/^endobj\b/', trim($line_content))) {
+                    break;
+                }
+
+                if (strpos($line_content, '/AP ') !== false) {
+                    $updated_line = preg_replace('/\/AP\s+<<[^>]*>>/', '/AP << /N ' . $appearance_object_id . ' 0 R >>', $line_content, 1);
+                    if (!is_string($updated_line) || $updated_line === $line_content) {
+                        continue;
+                    }
+                } else if (trim($line_content) === '>>') {
+                    $updated_line = '/AP << /N ' . $appearance_object_id . ' 0 R >>';
+                    array_splice($this->pdf_entries, $line_index, 0, array($updated_line));
+                    $this->shift += strlen($updated_line) + 1;
+                    $this->apply_offset_shift_from_object($object_id, strlen($updated_line) + 1);
+                    $this->shift_widget_stream_lines($line_index - 1, 1);
+                    if (isset($this->value_entries['$_XREF_$']["infos"]["line"]) && $line_index < $this->value_entries['$_XREF_$']["infos"]["line"]) {
+                        $this->value_entries['$_XREF_$']["infos"]["line"] += 1;
+                        if (isset($this->value_entries['$_XREF_$']["infos"]["start"]["line"])) {
+                            $this->value_entries['$_XREF_$']["infos"]["start"]["line"] += 1;
+                        }
+                    }
+                    return strlen($updated_line) + 1;
+                } else {
+                    continue;
+                }
+
+                $shift = strlen($updated_line) - strlen($line_content);
+                $this->pdf_entries[$line_index] = $updated_line;
+                if ($shift !== 0) {
+                    $this->shift += $shift;
+                    $this->apply_offset_shift_from_object($object_id, $shift);
+                }
+                return $shift;
+            }
+
+            return 0;
+        }
+
+        /**
+         * Calculate the serialized byte length of PDF lines.
+         *
+         * @param array $lines
+         * @return int
+         */
+        function get_pdf_entries_length($lines)
+        {
+            $length = 0;
+            foreach ($lines as $line) {
+                $length += strlen($line) + 1;
+            }
+
+            return $length;
         }
 
         /**
@@ -1257,8 +1623,37 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                     continue;
                 }
 
+                if(isset($field_definition["infos"]["header_line"]) && $field_definition["infos"]["header_line"] > $from_line) {
+                    $this->value_entries[$field_name]["infos"]["header_line"] += $line_shift;
+                }
+                if(isset($field_definition["infos"]["name_line"]) && $field_definition["infos"]["name_line"] > $from_line) {
+                    $this->value_entries[$field_name]["infos"]["name_line"] += $line_shift;
+                }
+                if(isset($field_definition["infos"]["value_name_line"]) && $field_definition["infos"]["value_name_line"] > $from_line) {
+                    $this->value_entries[$field_name]["infos"]["value_name_line"] += $line_shift;
+                }
+                if(isset($field_definition["infos"]["tooltip"]) && $field_definition["infos"]["tooltip"] > $from_line) {
+                    $this->value_entries[$field_name]["infos"]["tooltip"] += $line_shift;
+                }
+                if(isset($field_definition["infos"]["checkbox_state_line"]) && $field_definition["infos"]["checkbox_state_line"] > $from_line) {
+                    $this->value_entries[$field_name]["infos"]["checkbox_state_line"] += $line_shift;
+                }
+
+                if(isset($field_definition["values"]) && is_array($field_definition["values"])) {
+                    foreach($field_definition["values"] as $value_type => $value_line) {
+                        if($value_line > $from_line) {
+                            $this->value_entries[$field_name]["values"][$value_type] += $line_shift;
+                        }
+                    }
+                }
+
                 foreach($field_definition["infos"]["widgets"] as $widget_index => $widget) {
+                    if(isset($widget["header_line"]) && $widget["header_line"] > $from_line) {
+                        $widget["header_line"] += $line_shift;
+                    }
+
                     if(!isset($widget["appearance_normal_stream"]) || !is_array($widget["appearance_normal_stream"])) {
+                        $this->value_entries[$field_name]["infos"]["widgets"][$widget_index]=$widget;
                         continue;
                     }
 
@@ -2211,6 +2606,7 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                         $object["constraints"]["maxlen"]=$default_maxLen;
                         $object["infos"]=array();
                         $object["infos"]["object"]=intval($obj);
+                        $object["infos"]["header_line"]=$Counter;
                         $object["infos"]["tooltip"]=$default_tooltip_line;
                         $object["infos"]["widgets"]=array();
 
@@ -2229,15 +2625,25 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                                 //We process fields here, save only Annotations texts that are supported by now
                                 if($subtype=="Widget") {
                                     $name_inherited_from_parent = false;
+                                    $widget_definition = array("object"=>intval($obj));
+                                    if(isset($object["infos"]["header_line"])) {
+                                        $widget_definition["header_line"] = $object["infos"]["header_line"];
+                                    }
+                                    if(isset($object["infos"]["rect"])) {
+                                        $widget_definition["rect"] = $object["infos"]["rect"];
+                                    }
+                                    if(isset($object["infos"]["default_appearance"])) {
+                                        $widget_definition["default_appearance"] = $object["infos"]["default_appearance"];
+                                    }
                                     if($ap_normal_object) {
                                         $object["infos"]["widgets"]=$this->merge_field_widgets(
                                             $object["infos"]["widgets"],
-                                            array(array("object"=>intval($obj), "appearance_normal_object"=>$ap_normal_object))
+                                            array(array_merge($widget_definition, array("appearance_normal_object"=>$ap_normal_object)))
                                         );
                                     } else {
                                         $object["infos"]["widgets"]=$this->merge_field_widgets(
                                             $object["infos"]["widgets"],
-                                            array(array("object"=>intval($obj)))
+                                            array($widget_definition)
                                         );
                                     }
 
@@ -2416,6 +2822,30 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                                     //=== DEFINITION ====
                                     //preg_match("/^\/Type\s+\/(\w+)$/",$CurLine,$match)
                                     $match=array();
+                                    if (strpos($CurLine, '/Fields') !== false) {
+                                        if(($this->acroform_default_appearance == '') && preg_match('/\/DA\s*\(([^)]*)\)/', $this->_protectContentValues($CurLine), $acroform_match)) {
+                                            $this->acroform_default_appearance = $this->_unprotectContentValues($acroform_match[1]);
+                                        }
+
+                                        if(count($this->acroform_font_refs) == 0 && preg_match('/\/Font\s*<<\s*(.*?)\s*>>\s*>>\s*\/Fields/s', $CurLine, $font_match)) {
+                                            if (preg_match_all('/\/([^\s]+)\s+(\d+)\s+\d+\s+R/', $font_match[1], $font_ref_matches, PREG_SET_ORDER)) {
+                                                foreach ($font_ref_matches as $font_ref_match) {
+                                                    $this->acroform_font_refs[$font_ref_match[1]] = intval($font_ref_match[2]);
+                                                }
+                                            }
+                                        }
+
+                                        if (!$this->needAppearancesTrue) {
+                                            $updated_line = preg_replace('/\/Fields\b/', '/NeedAppearances true /Fields', $CurLine, 1);
+                                            if (is_string($updated_line) && $updated_line !== $CurLine) {
+                                                $entries[$Counter] = $updated_line;
+                                                $CurLine = $updated_line;
+                                                $fields_line = $Counter;
+                                                $this->needAppearancesTrue = true;
+                                            }
+                                        }
+                                    }
+
                                     if(!$parent_obj&&$this->extract_pdf_definition_value("/Parent", $CurLine, $match)) {
                                         $parent_obj = intval($match[1]);
                                         if ($verbose_parsing) {
@@ -2441,6 +2871,19 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                                     if(($field_type=='')&&preg_match("/^\/FT\s+\/(\w+)/",$CurLine,$match)) {
                                         $field_type=$match[1];
                                         $object["infos"]["field_type"]=$field_type;
+                                    }
+
+                                    if(!isset($object["infos"]["rect"]) && preg_match('/\/Rect\s*\[\s*([-+]?\d*\.?\d+)\s+([-+]?\d*\.?\d+)\s+([-+]?\d*\.?\d+)\s+([-+]?\d*\.?\d+)\s*\]/', $CurLine, $rect_match)) {
+                                        $object["infos"]["rect"] = array(
+                                            floatval($rect_match[1]),
+                                            floatval($rect_match[2]),
+                                            floatval($rect_match[3]),
+                                            floatval($rect_match[4]),
+                                        );
+                                    }
+
+                                    if(!isset($object["infos"]["default_appearance"]) && preg_match('/\/DA\s*\(([^)]*)\)/', $this->_protectContentValues($CurLine), $da_match)) {
+                                        $object["infos"]["default_appearance"] = $this->_unprotectContentValues($da_match[1]);
                                     }
 
                                     //FIX: parse checkbox definition
@@ -2560,12 +3003,6 @@ if (!call_user_func_array('class_exists', $__tmp)) {
                                         $object["constraints"]["maxlen"]=intval($maxLen);
                                     } else
                                         if($verbose_parsing) echo("WARNING: definition ignored");
-
-                                    if(substr($CurLine,0,7)=='/Fields' && !$this->needAppearancesTrue) {
-                                        $CurLine='/NeedAppearances true '.$CurLine;
-                                        $entries[$Counter]=$CurLine;
-                                        $fields_line = $Counter;
-                                    }
 
                                     //TODO: Fetch the XObject..and change Td <> Tj
                                     /*										if(preg_match("/^\/AP/",$CurLine,$values)) {
